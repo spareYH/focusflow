@@ -1,0 +1,30 @@
+@import 'tailwindcss';
+
+html,
+body,
+#root {
+  height: 100%;
+  font-family: "PingFang SC", "苹方", "PingFang TC", "Microsoft YaHei", "微软雅黑", system-ui, sans-serif;
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 99px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+:hover::-webkit-scrollbar-thumb {
+  opacity: 1;
+}

@@ -1,0 +1,10 @@
+{
+  "description": "Manage daily tasks effortlessly with this sleek productivity tool, helping users track what to do, what’s in progress, and what’s completed.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
