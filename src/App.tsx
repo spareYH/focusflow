@@ -421,14 +421,22 @@ function TaskCard({ task, onStatusChange, onEdit }: {
   onEdit: (task: Task) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   const isDone = task.status === "done";
   const p = priorityConfig[task.priority];
 
   return (
     <div
-      className={`group relative bg-white border rounded-[11px] p-4 transition-all cursor-pointer hover:shadow-md hover:-translate-y-0.5 ${
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", task.id);
+        setIsDragging(true);
+      }}
+      onDragEnd={() => setIsDragging(false)}
+      className={`group relative bg-white border rounded-[11px] p-4 transition-all cursor-grab active:cursor-grabbing hover:shadow-md hover:-translate-y-0.5 ${
         isDone ? "border-slate-100 opacity-75" : "border-slate-200/80 hover:border-indigo-200"
-      }`}
+      } ${isDragging ? "opacity-40 scale-[0.98]" : ""}`}
       style={{ boxShadow: isDone ? "none" : "0 1px 3px rgba(0,0,0,0.04)" }}
       onClick={() => onEdit(task)}
     >
@@ -499,6 +507,7 @@ function KanbanColumn({ status, tasks, onStatusChange, onEdit }: {
   onStatusChange: (id: string, status: Status) => void;
   onEdit: (task: Task) => void;
 }) {
+  const [isDragOver, setIsDragOver] = useState(false);
   const titles: Record<Status, string> = { todo: "待处理", inprogress: "进行中", done: "已完成" };
   const accents: Record<Status, string> = { todo: "bg-slate-400", inprogress: "bg-indigo-500", done: "bg-emerald-500" };
   const bgs: Record<Status, string> = { todo: "bg-slate-50", inprogress: "bg-indigo-50/50", done: "bg-emerald-50/40" };
@@ -510,7 +519,27 @@ function KanbanColumn({ status, tasks, onStatusChange, onEdit }: {
         <span className="text-[12px] font-semibold text-slate-500 tracking-widest uppercase">{titles[status]}</span>
         <span className="ml-auto text-[11px] font-semibold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-md">{tasks.length}</span>
       </div>
-      <div className={`flex-1 rounded-[13px] p-2.5 min-h-[280px] ${bgs[status]}`}>
+      <div
+        onDragOver={(event) => {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          setIsDragOver(true);
+        }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+            setIsDragOver(false);
+          }
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          const taskId = event.dataTransfer.getData("text/plain");
+          setIsDragOver(false);
+          if (taskId) onStatusChange(taskId, status);
+        }}
+        className={`flex-1 rounded-[13px] p-2.5 min-h-[280px] transition-all ${bgs[status]} ${
+          isDragOver ? "ring-2 ring-indigo-300 ring-offset-2" : ""
+        }`}
+      >
         <div className="space-y-2">
           {tasks.map((task) => (
             <TaskCard key={task.id} task={task} onStatusChange={onStatusChange} onEdit={onEdit} />
@@ -598,6 +627,8 @@ export default function App() {
   }
 
   function handleStatusChange(id: string, status: Status) {
+    const task = tasks.find((item) => item.id === id);
+    if (!task || task.status === status) return;
     setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status } : t)));
     const label = statusLabels[status];
     addToast(`已移至「${label}」`, "update");
