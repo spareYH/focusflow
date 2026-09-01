@@ -1,4 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
+import type { Session, User } from "@supabase/supabase-js";
+import AuthPage from "./AuthPage";
+import { supabase } from "./lib/supabase";
 
 type Priority = "High" | "Medium" | "Low";
 type Category = "Work" | "Personal";
@@ -559,27 +562,35 @@ function KanbanColumn({ status, tasks, onStatusChange, onEdit }: {
 }
 
 // ── Main App ──────────────────────────────────────────────────────────
-function loadTasks(): Task[] {
+function loadTasks(storageKey: string): Task[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey);
     if (raw) return JSON.parse(raw) as Task[];
+
+    const legacyRaw = localStorage.getItem(STORAGE_KEY);
+    if (legacyRaw) {
+      const legacyTasks = JSON.parse(legacyRaw) as Task[];
+      localStorage.removeItem(STORAGE_KEY);
+      return legacyTasks;
+    }
   } catch { /* ignore */ }
   return DEMO_TASKS;
 }
 
-function saveTasks(tasks: Task[]) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)); } catch { /* ignore */ }
+function saveTasks(storageKey: string, tasks: Task[]) {
+  try { localStorage.setItem(storageKey, JSON.stringify(tasks)); } catch { /* ignore */ }
 }
 
-export default function App() {
-  const [tasks, setTasks] = useState<Task[]>(loadTasks);
+function Dashboard({ user, onSignOut }: { user: User; onSignOut: () => Promise<void> }) {
+  const storageKey = `${STORAGE_KEY}_${user.id}`;
+  const [tasks, setTasks] = useState<Task[]>(() => loadTasks(storageKey));
   const [activeNav, setActiveNav] = useState<NavItem>("Today");
   const [showCreate, setShowCreate] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   // Persist on every change
-  useEffect(() => { saveTasks(tasks); }, [tasks]);
+  useEffect(() => { saveTasks(storageKey, tasks); }, [storageKey, tasks]);
 
   const addToast = useCallback((message: string, type: Toast["type"]) => {
     const id = genId();
@@ -721,9 +732,13 @@ export default function App() {
               <IconBell />
               <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-indigo-500 rounded-full" />
             </button>
-            <div className="w-8 h-8 rounded-xl flex items-center justify-center text-white text-[12px] font-bold cursor-pointer hover:opacity-90 transition-opacity" style={{ background: "linear-gradient(135deg, #6366f1, #a78bfa)" }} title="个人资料">
-              JD
-            </div>
+            <span className="hidden max-w-44 truncate text-[12px] font-medium text-slate-500 lg:block" title={user.email}>{user.email}</span>
+            <button
+              onClick={onSignOut}
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12px] font-semibold text-slate-600 transition hover:border-indigo-200 hover:text-indigo-600"
+            >
+              退出
+            </button>
           </div>
         </header>
 
@@ -782,4 +797,51 @@ export default function App() {
       `}</style>
     </div>
   );
+}
+
+function SessionLoading() {
+  return (
+    <div className="flex min-h-full items-center justify-center bg-slate-50" role="status" aria-live="polite">
+      <div className="flex flex-col items-center gap-3 text-sm font-medium text-slate-500">
+        <span className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600" />
+        正在恢复登录状态…
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [initializing, setInitializing] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!active) return;
+      if (error) console.error("Unable to restore Supabase session", error);
+      setSession(data.session);
+      setInitializing(false);
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      if (!active) return;
+      setSession(nextSession);
+      setInitializing(false);
+    });
+
+    return () => {
+      active = false;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  async function handleSignOut() {
+    const { error } = await supabase.auth.signOut();
+    if (error) console.error("Unable to sign out", error);
+  }
+
+  if (initializing) return <SessionLoading />;
+  if (!session?.user) return <AuthPage />;
+  return <Dashboard key={session.user.id} user={session.user} onSignOut={handleSignOut} />;
 }
