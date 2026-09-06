@@ -39,6 +39,7 @@ interface TaskRow {
 }
 
 const STORAGE_KEY = "focusflow_tasks";
+const MIGRATION_MARKER_PREFIX = "focusflow_localstorage_migration";
 
 const priorityConfig: Record<Priority, { label: string; dot: string; badge: string; text: string }> = {
   High: { label: "高", dot: "bg-red-400", badge: "bg-red-50 border-red-100", text: "text-red-600" },
@@ -62,6 +63,63 @@ function taskFromRow(row: TaskRow): Task {
     dueDate: row.due_date ?? undefined,
     createdAt: new Date(row.created_at).getTime(),
   };
+}
+
+function migrationMarkerKey(userId: string) {
+  return `${MIGRATION_MARKER_PREFIX}_${userId}`;
+}
+
+function hasMigrationMarker(userId: string) {
+  try {
+    return localStorage.getItem(migrationMarkerKey(userId)) !== null;
+  } catch {
+    return true;
+  }
+}
+
+function setMigrationMarker(userId: string, outcome: "imported" | "skipped") {
+  localStorage.setItem(migrationMarkerKey(userId), outcome);
+}
+
+function isPriority(value: unknown): value is Priority {
+  return value === "High" || value === "Medium" || value === "Low";
+}
+
+function isCategory(value: unknown): value is Category {
+  return value === "Work" || value === "Personal";
+}
+
+function isStatus(value: unknown): value is Status {
+  return value === "todo" || value === "inprogress" || value === "done";
+}
+
+function isLegacyTask(value: unknown): value is Task {
+  if (!value || typeof value !== "object") return false;
+  const task = value as Partial<Task>;
+  return typeof task.title === "string" && task.title.trim().length > 0
+    && typeof task.description === "string"
+    && isPriority(task.priority)
+    && isCategory(task.category)
+    && isStatus(task.status)
+    && (task.dueDate === undefined || typeof task.dueDate === "string")
+    && typeof task.createdAt === "number"
+    && Number.isFinite(task.createdAt);
+}
+
+// Generates a stable UUID for one legacy task. Repeated imports therefore use the
+// same primary keys and cannot create duplicate rows, without a schema change.
+function stableLegacyTaskId(userId: string, task: Task, index: number) {
+  const input = `${userId}|${task.id}|${task.createdAt}|${task.title}|${index}`;
+  let first = 0x811c9dc5;
+  let second = 0x811c9dc5;
+  for (let position = 0; position < input.length; position += 1) {
+    const code = input.charCodeAt(position);
+    first = Math.imul(first ^ code, 0x01000193) >>> 0;
+    second = Math.imul(second ^ (code + position), 0x01000193) >>> 0;
+  }
+  const hex = (value: number) => value.toString(16).padStart(8, "0");
+  const hash = `${hex(first)}${hex(second)}${hex(first ^ 0xa5a5a5a5)}${hex(second ^ 0x5a5a5a5a)}`;
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
 }
 
 // ── Icons ──────────────────────────────────────────────────────────
@@ -442,6 +500,33 @@ function EditTaskModal({ task, onClose, onSave, onDelete }: {
   );
 }
 
+function LocalStorageMigrationModal({ count, importing, error, onImport, onSkip }: {
+  count: number;
+  importing: boolean;
+  error: string | null;
+  onImport: () => void;
+  onSkip: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/35 px-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="migration-title">
+      <div className="w-full max-w-[440px] overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div className="border-b border-slate-100 px-6 pb-4 pt-5">
+          <h2 id="migration-title" className="text-[16px] font-semibold text-slate-800">检测到旧版本地任务</h2>
+          <p className="mt-1 text-[13px] leading-5 text-slate-500">发现 {count} 项仅保存在此浏览器中的旧任务。是否导入到当前账号的云端看板？</p>
+        </div>
+        <div className="px-6 py-5">
+          <p className="rounded-xl bg-indigo-50 px-3 py-2.5 text-[12px] leading-5 text-indigo-700">导入后仍会保留本地数据；之后所有任务将继续以云端数据为准。</p>
+          {error && <p role="alert" className="mt-3 rounded-xl bg-red-50 px-3 py-2.5 text-[12px] leading-5 text-red-600">{error}</p>}
+          <div className="mt-5 flex gap-2">
+            <button type="button" onClick={onSkip} disabled={importing} className="flex-1 rounded-xl border border-slate-200 bg-white py-2.5 text-[13px] font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60">暂不导入</button>
+            <button type="button" onClick={onImport} disabled={importing} className="flex-1 rounded-xl bg-indigo-600 py-2.5 text-[13px] font-semibold text-white shadow-sm shadow-indigo-200 transition-colors hover:bg-indigo-700 disabled:cursor-wait disabled:opacity-60">{importing ? "正在导入…" : "导入到云端"}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Task Card ─────────────────────────────────────────────────────────
 function TaskCard({ task, onStatusChange, onEdit, disabled }: {
   task: Task;
@@ -594,12 +679,15 @@ function loadLocalTasksForMigration(userId: string): Task[] {
   try {
     const storageKey = `${STORAGE_KEY}_${userId}`;
     const raw = localStorage.getItem(storageKey);
-    if (raw) return JSON.parse(raw) as Task[];
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.filter(isLegacyTask) : [];
+    }
 
     const legacyRaw = localStorage.getItem(STORAGE_KEY);
     if (legacyRaw) {
-      const legacyTasks = JSON.parse(legacyRaw) as Task[];
-      return legacyTasks;
+      const parsed = JSON.parse(legacyRaw);
+      return Array.isArray(parsed) ? parsed.filter(isLegacyTask) : [];
     }
   } catch { /* ignore */ }
   return [];
@@ -614,6 +702,10 @@ function Dashboard({ user, onSignOut }: { user: User; onSignOut: () => Promise<v
   const [showCreate, setShowCreate] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [legacyTasks, setLegacyTasks] = useState<Task[]>([]);
+  const [migrationVisible, setMigrationVisible] = useState(false);
+  const [migrationImporting, setMigrationImporting] = useState(false);
+  const [migrationError, setMigrationError] = useState<string | null>(null);
 
   const addToast = useCallback((message: string, type: Toast["type"]) => {
     const id = genId();
@@ -645,6 +737,11 @@ function Dashboard({ user, onSignOut }: { user: User; onSignOut: () => Promise<v
 
   useEffect(() => {
     let active = true;
+    const foundLegacyTasks = hasMigrationMarker(user.id) ? [] : loadLocalTasksForMigration(user.id);
+    if (foundLegacyTasks.length > 0) {
+      setLegacyTasks(foundLegacyTasks);
+      setMigrationVisible(true);
+    }
     void (async () => {
       setTasks([]);
       setLoadingTasks(true);
@@ -661,6 +758,53 @@ function Dashboard({ user, onSignOut }: { user: User; onSignOut: () => Promise<v
     })();
     return () => { active = false; };
   }, [user.id]);
+
+  function handleSkipMigration() {
+    try {
+      setMigrationMarker(user.id, "skipped");
+      setMigrationVisible(false);
+      setMigrationError(null);
+    } catch {
+      setMigrationError("无法保存你的选择，请检查浏览器存储权限后重试。");
+    }
+  }
+
+  async function handleImportMigration() {
+    if (migrationImporting || legacyTasks.length === 0) return;
+    setMigrationImporting(true);
+    setMigrationError(null);
+
+    const rows = legacyTasks.map((task, index) => ({
+      id: stableLegacyTaskId(user.id, task, index),
+      user_id: user.id,
+      title: task.title.trim(),
+      description: task.description,
+      priority: task.priority,
+      category: task.category,
+      status: task.status,
+      due_date: task.dueDate ?? null,
+      created_at: new Date(task.createdAt).toISOString(),
+    }));
+    const { error } = await supabase.from("tasks").upsert(rows, { onConflict: "id" });
+    if (error) {
+      setMigrationImporting(false);
+      setMigrationError("导入失败，本地任务没有被删除。请检查网络后重试。");
+      return;
+    }
+
+    try {
+      setMigrationMarker(user.id, "imported");
+    } catch {
+      setMigrationImporting(false);
+      setMigrationError("任务已写入云端，但无法保存迁移状态。请重试；不会创建重复任务。");
+      return;
+    }
+
+    setMigrationVisible(false);
+    setMigrationImporting(false);
+    addToast(`已导入 ${legacyTasks.length} 项本地任务`, "success");
+    await loadCloudTasks();
+  }
 
   // Derived stats (always from full task list)
   const totalCount = tasks.length;
@@ -916,6 +1060,7 @@ function Dashboard({ user, onSignOut }: { user: User; onSignOut: () => Promise<v
       {/* Modals */}
       {showCreate && <CreateTaskModal onClose={() => setShowCreate(false)} onCreate={handleCreate} />}
       {editingTask && <EditTaskModal task={editingTask} onClose={() => setEditingTask(null)} onSave={handleSave} onDelete={handleDelete} />}
+      {migrationVisible && <LocalStorageMigrationModal count={legacyTasks.length} importing={migrationImporting} error={migrationError} onImport={() => void handleImportMigration()} onSkip={handleSkipMigration} />}
 
       {/* Toasts */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
