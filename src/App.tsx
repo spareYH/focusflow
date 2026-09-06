@@ -23,21 +23,22 @@ type NavItem = "Today" | "All Tasks" | "Work" | "Personal";
 interface Toast {
   id: string;
   message: string;
-  type: "success" | "delete" | "update";
+  type: "success" | "delete" | "update" | "error";
+}
+
+interface TaskRow {
+  id: string;
+  user_id: string;
+  title: string;
+  description: string;
+  priority: Priority;
+  category: Category;
+  status: Status;
+  due_date: string | null;
+  created_at: string;
 }
 
 const STORAGE_KEY = "focusflow_tasks";
-
-const DEMO_TASKS: Task[] = [
-  { id: "1", title: "设计落地页", description: "完成营销官网的线框图与高保真视觉稿", priority: "High", category: "Work", status: "todo", dueDate: "9月2日", createdAt: Date.now() },
-  { id: "2", title: "准备周报", description: "整理本周核心数据与洞察，供周五团队评审使用", priority: "Medium", category: "Work", status: "todo", dueDate: "9月1日", createdAt: Date.now() },
-  { id: "3", title: "竞品调研", description: "分析 Top 5 竞品的功能矩阵与体验差异", priority: "Low", category: "Work", status: "todo", createdAt: Date.now() },
-  { id: "4", title: "审查设计系统", description: "检查组件库的一致性与无障碍合规情况", priority: "High", category: "Work", status: "inprogress", dueDate: "8月31日", createdAt: Date.now() },
-  { id: "5", title: "更新使用文档", description: "用新版截图重写用户引导说明", priority: "Medium", category: "Personal", status: "inprogress", createdAt: Date.now() },
-  { id: "6", title: "团队周例会", description: "设计与研发负责人每周对齐会议", priority: "Medium", category: "Work", status: "done", createdAt: Date.now() },
-  { id: "7", title: "上线 FocusFlow", description: "推送生产构建并验证健康检查通过", priority: "High", category: "Work", status: "done", createdAt: Date.now() },
-  { id: "8", title: "整理项目文件", description: "重构 Figma 工作区为清晰的文件夹层级", priority: "Low", category: "Personal", status: "done", createdAt: Date.now() },
-];
 
 const priorityConfig: Record<Priority, { label: string; dot: string; badge: string; text: string }> = {
   High: { label: "高", dot: "bg-red-400", badge: "bg-red-50 border-red-100", text: "text-red-600" },
@@ -49,6 +50,19 @@ const statusLabels: Record<Status, string> = { todo: "待处理", inprogress: "�
 const catLabels: Record<Category, string> = { Work: "工作", Personal: "个人" };
 
 function genId() { return Math.random().toString(36).slice(2, 9); }
+
+function taskFromRow(row: TaskRow): Task {
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description,
+    priority: row.priority,
+    category: row.category,
+    status: row.status,
+    dueDate: row.due_date ?? undefined,
+    createdAt: new Date(row.created_at).getTime(),
+  };
+}
 
 // ── Icons ──────────────────────────────────────────────────────────
 function IconFocus() {
@@ -110,14 +124,14 @@ function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
           key={t.id}
           className="pointer-events-auto flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl text-[13px] font-medium shadow-lg"
           style={{
-            background: t.type === "delete" ? "#fef2f2" : "white",
-            border: `1px solid ${t.type === "delete" ? "#fecaca" : t.type === "update" ? "#e0e7ff" : "#d1fae5"}`,
-            color: t.type === "delete" ? "#dc2626" : t.type === "update" ? "#4f46e5" : "#059669",
+            background: t.type === "delete" || t.type === "error" ? "#fef2f2" : "white",
+            border: `1px solid ${t.type === "delete" || t.type === "error" ? "#fecaca" : t.type === "update" ? "#e0e7ff" : "#d1fae5"}`,
+            color: t.type === "delete" || t.type === "error" ? "#dc2626" : t.type === "update" ? "#4f46e5" : "#059669",
             boxShadow: "0 4px 16px rgba(0,0,0,0.08)",
             animation: "slideUp 0.2s ease",
           }}
         >
-          <span>{t.type === "delete" ? <IconTrash /> : t.type === "update" ? <IconInfo /> : <IconCheckCircle />}</span>
+          <span>{t.type === "delete" ? <IconTrash /> : t.type === "update" || t.type === "error" ? <IconInfo /> : <IconCheckCircle />}</span>
           {t.message}
           <button onClick={() => onDismiss(t.id)} className="ml-1 opacity-50 hover:opacity-100 transition-opacity">
             <IconX />
@@ -239,7 +253,7 @@ function TaskFormFields({
 // ── Create Task Modal ─────────────────────────────────────────────────
 function CreateTaskModal({ onClose, onCreate }: {
   onClose: () => void;
-  onCreate: (task: Omit<Task, "id" | "createdAt">) => void;
+  onCreate: (task: Omit<Task, "id" | "createdAt">) => Promise<boolean>;
 }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -248,6 +262,7 @@ function CreateTaskModal({ onClose, onCreate }: {
   const [status, setStatus] = useState<Status>("todo");
   const [titleError, setTitleError] = useState(false);
   const [visible, setVisible] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => { requestAnimationFrame(() => setVisible(true)); }, []);
 
@@ -256,11 +271,14 @@ function CreateTaskModal({ onClose, onCreate }: {
     setTimeout(onClose, 180);
   }
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!title.trim()) { setTitleError(true); return; }
-    onCreate({ title: title.trim(), description: description.trim(), priority, category, status });
-    close();
+    if (submitting) return;
+    setSubmitting(true);
+    const saved = await onCreate({ title: title.trim(), description: description.trim(), priority, category, status });
+    setSubmitting(false);
+    if (saved) close();
   }
 
   return (
@@ -302,7 +320,7 @@ function CreateTaskModal({ onClose, onCreate }: {
           />
           <div className="flex gap-2 mt-5">
             <button type="button" onClick={close} className="flex-1 py-2.5 text-[13px] font-medium text-slate-500 bg-slate-50 border border-slate-200 rounded-xl hover:bg-slate-100 transition-colors">取消</button>
-            <button type="submit" className="flex-1 py-2.5 text-[13px] font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 active:scale-[0.98] transition-all shadow-sm shadow-indigo-200">创建任务</button>
+            <button type="submit" disabled={submitting} className="flex-1 py-2.5 text-[13px] font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 active:scale-[0.98] transition-all shadow-sm shadow-indigo-200 disabled:cursor-not-allowed disabled:opacity-60">{submitting ? "正在创建…" : "创建任务"}</button>
           </div>
         </form>
       </div>
@@ -314,8 +332,8 @@ function CreateTaskModal({ onClose, onCreate }: {
 function EditTaskModal({ task, onClose, onSave, onDelete }: {
   task: Task;
   onClose: () => void;
-  onSave: (updated: Task) => void;
-  onDelete: (id: string) => void;
+  onSave: (updated: Task) => Promise<boolean>;
+  onDelete: (id: string) => Promise<boolean>;
 }) {
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
@@ -325,6 +343,7 @@ function EditTaskModal({ task, onClose, onSave, onDelete }: {
   const [titleError, setTitleError] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [visible, setVisible] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => { requestAnimationFrame(() => setVisible(true)); }, []);
 
@@ -333,16 +352,22 @@ function EditTaskModal({ task, onClose, onSave, onDelete }: {
     setTimeout(onClose, 180);
   }
 
-  function handleSave(e: React.FormEvent) {
+  async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     if (!title.trim()) { setTitleError(true); return; }
-    onSave({ ...task, title: title.trim(), description: description.trim(), priority, category, status });
-    close();
+    if (submitting) return;
+    setSubmitting(true);
+    const saved = await onSave({ ...task, title: title.trim(), description: description.trim(), priority, category, status });
+    setSubmitting(false);
+    if (saved) close();
   }
 
-  function handleDelete() {
-    onDelete(task.id);
-    close();
+  async function handleDelete() {
+    if (submitting) return;
+    setSubmitting(true);
+    const deleted = await onDelete(task.id);
+    setSubmitting(false);
+    if (deleted) close();
   }
 
   return (
@@ -385,7 +410,7 @@ function EditTaskModal({ task, onClose, onSave, onDelete }: {
             <p className="text-[12px] text-slate-400 mb-5">「{task.title}」将被永久删除，无法恢复。</p>
             <div className="flex gap-2">
               <button onClick={() => setConfirmDelete(false)} className="flex-1 py-2.5 text-[13px] font-medium text-slate-500 bg-slate-50 border border-slate-200 rounded-xl hover:bg-slate-100 transition-colors">取消</button>
-              <button onClick={handleDelete} className="flex-1 py-2.5 text-[13px] font-semibold text-white bg-red-500 rounded-xl hover:bg-red-600 active:scale-[0.98] transition-all">确认删除</button>
+              <button onClick={handleDelete} disabled={submitting} className="flex-1 py-2.5 text-[13px] font-semibold text-white bg-red-500 rounded-xl hover:bg-red-600 active:scale-[0.98] transition-all disabled:cursor-not-allowed disabled:opacity-60">{submitting ? "正在删除…" : "确认删除"}</button>
             </div>
           </div>
         ) : (
@@ -408,7 +433,7 @@ function EditTaskModal({ task, onClose, onSave, onDelete }: {
                 <IconTrash />
               </button>
               <button type="button" onClick={close} className="flex-1 py-2.5 text-[13px] font-medium text-slate-500 bg-slate-50 border border-slate-200 rounded-xl hover:bg-slate-100 transition-colors">取消</button>
-              <button type="submit" className="flex-1 py-2.5 text-[13px] font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 active:scale-[0.98] transition-all shadow-sm shadow-indigo-200">保存更改</button>
+              <button type="submit" disabled={submitting} className="flex-1 py-2.5 text-[13px] font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 active:scale-[0.98] transition-all shadow-sm shadow-indigo-200 disabled:cursor-not-allowed disabled:opacity-60">{submitting ? "正在保存…" : "保存更改"}</button>
             </div>
           </form>
         )}
@@ -418,10 +443,11 @@ function EditTaskModal({ task, onClose, onSave, onDelete }: {
 }
 
 // ── Task Card ─────────────────────────────────────────────────────────
-function TaskCard({ task, onStatusChange, onEdit }: {
+function TaskCard({ task, onStatusChange, onEdit, disabled }: {
   task: Task;
   onStatusChange: (id: string, status: Status) => void;
   onEdit: (task: Task) => void;
+  disabled: boolean;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
@@ -430,18 +456,18 @@ function TaskCard({ task, onStatusChange, onEdit }: {
 
   return (
     <div
-      draggable
+      draggable={!disabled}
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = "move";
         event.dataTransfer.setData("text/plain", task.id);
         setIsDragging(true);
       }}
       onDragEnd={() => setIsDragging(false)}
-      className={`group relative bg-white border rounded-[11px] p-4 transition-all cursor-grab active:cursor-grabbing hover:shadow-md hover:-translate-y-0.5 ${
+      className={`group relative bg-white border rounded-[11px] p-4 transition-all ${disabled ? "cursor-wait opacity-60" : "cursor-grab active:cursor-grabbing hover:shadow-md hover:-translate-y-0.5"} ${
         isDone ? "border-slate-100 opacity-75" : "border-slate-200/80 hover:border-indigo-200"
       } ${isDragging ? "opacity-40 scale-[0.98]" : ""}`}
       style={{ boxShadow: isDone ? "none" : "0 1px 3px rgba(0,0,0,0.04)" }}
-      onClick={() => onEdit(task)}
+      onClick={() => { if (!disabled) onEdit(task); }}
     >
       <div className="flex items-start justify-between gap-2 mb-2.5">
         <h4 className={`text-[13.5px] font-semibold leading-snug flex-1 ${isDone ? "line-through text-slate-400" : "text-slate-800"}`}>
@@ -504,11 +530,12 @@ function TaskCard({ task, onStatusChange, onEdit }: {
 }
 
 // ── Kanban Column ─────────────────────────────────────────────────────
-function KanbanColumn({ status, tasks, onStatusChange, onEdit }: {
+function KanbanColumn({ status, tasks, onStatusChange, onEdit, disabled }: {
   status: Status;
   tasks: Task[];
   onStatusChange: (id: string, status: Status) => void;
   onEdit: (task: Task) => void;
+  disabled: boolean;
 }) {
   const [isDragOver, setIsDragOver] = useState(false);
   const titles: Record<Status, string> = { todo: "待处理", inprogress: "进行中", done: "已完成" };
@@ -537,7 +564,7 @@ function KanbanColumn({ status, tasks, onStatusChange, onEdit }: {
           event.preventDefault();
           const taskId = event.dataTransfer.getData("text/plain");
           setIsDragOver(false);
-          if (taskId) onStatusChange(taskId, status);
+          if (taskId && !disabled) onStatusChange(taskId, status);
         }}
         className={`flex-1 rounded-[13px] p-2.5 min-h-[280px] transition-all ${bgs[status]} ${
           isDragOver ? "ring-2 ring-indigo-300 ring-offset-2" : ""
@@ -545,7 +572,7 @@ function KanbanColumn({ status, tasks, onStatusChange, onEdit }: {
       >
         <div className="space-y-2">
           {tasks.map((task) => (
-            <TaskCard key={task.id} task={task} onStatusChange={onStatusChange} onEdit={onEdit} />
+            <TaskCard key={task.id} task={task} onStatusChange={onStatusChange} onEdit={onEdit} disabled={disabled} />
           ))}
           {tasks.length === 0 && (
             <div className="flex flex-col items-center justify-center py-10 text-center">
@@ -562,35 +589,31 @@ function KanbanColumn({ status, tasks, onStatusChange, onEdit }: {
 }
 
 // ── Main App ──────────────────────────────────────────────────────────
-function loadTasks(storageKey: string): Task[] {
+// Retained for Issue #6. Logged-in task rendering never calls this reader.
+function loadLocalTasksForMigration(userId: string): Task[] {
   try {
+    const storageKey = `${STORAGE_KEY}_${userId}`;
     const raw = localStorage.getItem(storageKey);
     if (raw) return JSON.parse(raw) as Task[];
 
     const legacyRaw = localStorage.getItem(STORAGE_KEY);
     if (legacyRaw) {
       const legacyTasks = JSON.parse(legacyRaw) as Task[];
-      localStorage.removeItem(STORAGE_KEY);
       return legacyTasks;
     }
   } catch { /* ignore */ }
-  return DEMO_TASKS;
-}
-
-function saveTasks(storageKey: string, tasks: Task[]) {
-  try { localStorage.setItem(storageKey, JSON.stringify(tasks)); } catch { /* ignore */ }
+  return [];
 }
 
 function Dashboard({ user, onSignOut }: { user: User; onSignOut: () => Promise<void> }) {
-  const storageKey = `${STORAGE_KEY}_${user.id}`;
-  const [tasks, setTasks] = useState<Task[]>(() => loadTasks(storageKey));
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [loadingTasks, setLoadingTasks] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [mutating, setMutating] = useState(false);
   const [activeNav, setActiveNav] = useState<NavItem>("Today");
   const [showCreate, setShowCreate] = useState(false);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
-
-  // Persist on every change
-  useEffect(() => { saveTasks(storageKey, tasks); }, [storageKey, tasks]);
 
   const addToast = useCallback((message: string, type: Toast["type"]) => {
     const id = genId();
@@ -599,6 +622,45 @@ function Dashboard({ user, onSignOut }: { user: User; onSignOut: () => Promise<v
   }, []);
 
   function dismissToast(id: string) { setToasts((prev) => prev.filter((t) => t.id !== id)); }
+
+  const loadCloudTasks = useCallback(async () => {
+    setTasks([]);
+    setEditingTask(null);
+    setLoadError(null);
+    setLoadingTasks(true);
+
+    const { data, error } = await supabase
+      .from("tasks")
+      .select("id,user_id,title,description,priority,category,status,due_date,created_at")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      setLoadError("任务加载失败，请检查网络后重试。");
+    } else {
+      setTasks((data as TaskRow[]).map(taskFromRow));
+    }
+    setLoadingTasks(false);
+  }, [user.id]);
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      setTasks([]);
+      setLoadingTasks(true);
+      setLoadError(null);
+      const { data, error } = await supabase
+        .from("tasks")
+        .select("id,user_id,title,description,priority,category,status,due_date,created_at")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+      if (!active) return;
+      if (error) setLoadError("任务加载失败，请检查网络后重试。");
+      else setTasks((data as TaskRow[]).map(taskFromRow));
+      setLoadingTasks(false);
+    })();
+    return () => { active = false; };
+  }, [user.id]);
 
   // Derived stats (always from full task list)
   const totalCount = tasks.length;
@@ -620,27 +682,80 @@ function Dashboard({ user, onSignOut }: { user: User; onSignOut: () => Promise<v
   const inProgressTasks = filteredTasks.filter((t) => t.status === "inprogress");
   const doneTasks = filteredTasks.filter((t) => t.status === "done");
 
-  function handleCreate(task: Omit<Task, "id" | "createdAt">) {
-    const newTask: Task = { ...task, id: genId(), createdAt: Date.now() };
-    setTasks((prev) => [newTask, ...prev]);
+  async function handleCreate(task: Omit<Task, "id" | "createdAt">) {
+    if (mutating) return false;
+    setMutating(true);
+    const { data, error } = await supabase.from("tasks").insert({
+      user_id: user.id,
+      title: task.title,
+      description: task.description,
+      priority: task.priority,
+      category: task.category,
+      status: task.status,
+      due_date: task.dueDate ?? null,
+    }).select("id,user_id,title,description,priority,category,status,due_date,created_at").single();
+    setMutating(false);
+    if (error) {
+      addToast("创建失败，请重试", "error");
+      return false;
+    }
+    setTasks((prev) => [taskFromRow(data as TaskRow), ...prev]);
     addToast("任务已创建", "success");
+    return true;
   }
 
-  function handleSave(updated: Task) {
-    setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+  async function handleSave(updated: Task) {
+    if (mutating) return false;
+    setMutating(true);
+    const { data, error } = await supabase.from("tasks").update({
+      title: updated.title,
+      description: updated.description,
+      priority: updated.priority,
+      category: updated.category,
+      status: updated.status,
+      due_date: updated.dueDate ?? null,
+    }).eq("id", updated.id).eq("user_id", user.id)
+      .select("id,user_id,title,description,priority,category,status,due_date,created_at").single();
+    setMutating(false);
+    if (error) {
+      addToast("保存失败，原任务未更改", "error");
+      return false;
+    }
+    const saved = taskFromRow(data as TaskRow);
+    setTasks((prev) => prev.map((t) => (t.id === saved.id ? saved : t)));
     addToast("任务已更新", "update");
+    return true;
   }
 
-  function handleDelete(id: string) {
+  async function handleDelete(id: string) {
+    if (mutating) return false;
+    setMutating(true);
+    const { error } = await supabase.from("tasks").delete().eq("id", id).eq("user_id", user.id).select("id").single();
+    setMutating(false);
+    if (error) {
+      addToast("删除失败，任务仍然保留", "error");
+      return false;
+    }
     setTasks((prev) => prev.filter((t) => t.id !== id));
     setEditingTask(null);
     addToast("任务已删除", "delete");
+    return true;
   }
 
-  function handleStatusChange(id: string, status: Status) {
+  async function handleStatusChange(id: string, status: Status) {
     const task = tasks.find((item) => item.id === id);
-    if (!task || task.status === status) return;
-    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status } : t)));
+    if (!task || task.status === status || mutating) return;
+    setMutating(true);
+    const { data, error } = await supabase.from("tasks").update({ status })
+      .eq("id", id).eq("user_id", user.id)
+      .select("id,user_id,title,description,priority,category,status,due_date,created_at").single();
+    setMutating(false);
+    if (error) {
+      addToast("状态更新失败，任务未移动", "error");
+      return;
+    }
+    const saved = taskFromRow(data as TaskRow);
+    setTasks((prev) => prev.map((t) => (t.id === id ? saved : t)));
     const label = statusLabels[status];
     addToast(`已移至「${label}」`, "update");
   }
@@ -710,7 +825,8 @@ function Dashboard({ user, onSignOut }: { user: User; onSignOut: () => Promise<v
         <div className="p-4">
           <button
             onClick={() => setShowCreate(true)}
-            className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-[13px] font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98]"
+            disabled={loadingTasks || mutating}
+            className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-[13px] font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
             style={{ background: "linear-gradient(135deg, #6366f1 0%, #818cf8 100%)", boxShadow: "0 2px 8px rgba(99,102,241,0.3)" }}
           >
             <IconPlus /> 新建任务
@@ -743,6 +859,12 @@ function Dashboard({ user, onSignOut }: { user: User; onSignOut: () => Promise<v
         </header>
 
         <div className="flex-1 overflow-y-auto px-8 pb-8">
+          {loadError && (
+            <div className="mb-4 flex items-center justify-between rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[13px] font-medium text-red-700" role="alert">
+              <span>{loadError}</span>
+              <button onClick={() => void loadCloudTasks()} className="rounded-lg border border-red-200 bg-white px-3 py-1.5 font-semibold hover:bg-red-100">重试</button>
+            </div>
+          )}
           {/* Progress surface */}
           <div className="rounded-2xl mb-6 p-5" style={{ background: "white", border: "1px solid #e8eaf0", boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
             <div className="flex items-center justify-between mb-3.5">
@@ -774,11 +896,20 @@ function Dashboard({ user, onSignOut }: { user: User; onSignOut: () => Promise<v
           </div>
 
           {/* Kanban */}
-          <div className="grid gap-5" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
-            <KanbanColumn status="todo" tasks={todoTasks} onStatusChange={handleStatusChange} onEdit={setEditingTask} />
-            <KanbanColumn status="inprogress" tasks={inProgressTasks} onStatusChange={handleStatusChange} onEdit={setEditingTask} />
-            <KanbanColumn status="done" tasks={doneTasks} onStatusChange={handleStatusChange} onEdit={setEditingTask} />
-          </div>
+          {loadingTasks ? (
+            <div className="flex min-h-[320px] items-center justify-center rounded-2xl border border-slate-200 bg-white" role="status" aria-live="polite">
+              <div className="flex flex-col items-center gap-3 text-[13px] font-medium text-slate-500">
+                <span className="h-7 w-7 animate-spin rounded-full border-2 border-indigo-200 border-t-indigo-600" />
+                正在加载云端任务…
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-5" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
+              <KanbanColumn status="todo" tasks={todoTasks} onStatusChange={handleStatusChange} onEdit={setEditingTask} disabled={mutating} />
+              <KanbanColumn status="inprogress" tasks={inProgressTasks} onStatusChange={handleStatusChange} onEdit={setEditingTask} disabled={mutating} />
+              <KanbanColumn status="done" tasks={doneTasks} onStatusChange={handleStatusChange} onEdit={setEditingTask} disabled={mutating} />
+            </div>
+          )}
         </div>
       </main>
 
